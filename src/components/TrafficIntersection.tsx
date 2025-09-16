@@ -37,7 +37,7 @@ export const TrafficIntersection = () => {
   const [directions, setDirections] = useState<Record<Direction, DirectionState>>({
     north: { signal: 'red', countdown: 0, vehicleCount: 0, allowLeft: true, allowRight: true },
     south: { signal: 'red', countdown: 0, vehicleCount: 0, allowLeft: true, allowRight: true },
-    east: { signal: 'green', countdown: 30, vehicleCount: 0, allowLeft: true, allowRight: true },
+    east: { signal: 'green', countdown: 25, vehicleCount: 0, allowLeft: true, allowRight: true },
     west: { signal: 'red', countdown: 0, vehicleCount: 0, allowLeft: true, allowRight: true }
   });
   const [currentDirection, setCurrentDirection] = useState<Direction>('east');
@@ -64,19 +64,29 @@ export const TrafficIntersection = () => {
     const nextDirection = directionOrder[(currentIndex + 1) % 4];
     const nextCount = directions[nextDirection].vehicleCount;
     
-    // Switch if current direction has few vehicles or next direction has significantly more
-    const shouldSwitch = currentCount <= 2 || (nextCount > currentCount * 2 && directions[currentDirection].countdown <= 5);
+    // Switch conditions:
+    // 1. Current countdown is 0 (natural end)
+    // 2. Current direction has no vehicles and countdown < 5
+    // 3. Next direction has significantly more vehicles and current countdown < 10
+    const currentSignal = directions[currentDirection].signal;
+    const currentCountdown = directions[currentDirection].countdown;
     
-    if (shouldSwitch && directions[currentDirection].countdown <= 0) {
-      const decision = `AI: Switching from ${currentDirection} to ${nextDirection} - Current: ${currentCount} vehicles, Next: ${nextCount} vehicles`;
+    const shouldSwitch = (
+      (currentCountdown <= 0 && currentSignal === 'red') || // Natural cycle end
+      (currentCount === 0 && currentCountdown <= 5) || // No vehicles waiting
+      (nextCount >= currentCount + 3 && currentCountdown <= 10) // High demand next
+    );
+    
+    if (shouldSwitch) {
+      const decision = `AI: Switching ${currentDirection}→${nextDirection} | Current: ${currentCount}v, Next: ${nextCount}v`;
       setAiDecisions(prev => [...prev.slice(-4), decision]);
-      return { switchTo: nextDirection, greenTime: Math.min(Math.max(10, nextCount * 1.5), 45) };
+      return { switchTo: nextDirection, greenTime: Math.min(Math.max(15, nextCount * 2), 50) };
     }
     
     return { switchTo: null, greenTime: optimalTime };
   }, [currentDirection, directions]);
 
-  // Update signal states
+  // Update signal states - Ensure only one direction has green at a time
   useEffect(() => {
     const interval = setInterval(() => {
       setDirections(prev => {
@@ -85,36 +95,43 @@ export const TrafficIntersection = () => {
         
         // Handle direction switching
         if (decision.switchTo) {
+          // Set ALL directions to red first
           Object.keys(newState).forEach(dir => {
-            if (dir === decision.switchTo) {
-              newState[dir as Direction] = {
-                ...newState[dir as Direction],
-                signal: 'green',
-                countdown: decision.greenTime
-              };
-            } else {
-              newState[dir as Direction] = {
-                ...newState[dir as Direction],
-                signal: 'red',
-                countdown: 0
-              };
-            }
+            newState[dir as Direction] = {
+              ...newState[dir as Direction],
+              signal: 'red',
+              countdown: 0
+            };
           });
+          
+          // Then set only the target direction to green
+          newState[decision.switchTo] = {
+            ...newState[decision.switchTo],
+            signal: 'green',
+            countdown: decision.greenTime
+          };
+          
           setCurrentDirection(decision.switchTo);
         } else {
           // Countdown existing green light
-          Object.keys(newState).forEach(dir => {
-            if (newState[dir as Direction].signal === 'green' && newState[dir as Direction].countdown > 0) {
+          const greenDirection = Object.entries(newState).find(([_, state]) => state.signal === 'green');
+          
+          if (greenDirection) {
+            const [dir, state] = greenDirection;
+            if (state.countdown > 0) {
               newState[dir as Direction].countdown -= 1;
-            }
-            if (newState[dir as Direction].countdown <= 0 && newState[dir as Direction].signal === 'green') {
+            } else if (state.signal === 'green') {
+              // Switch to yellow for 3 seconds
               newState[dir as Direction].signal = 'yellow';
               newState[dir as Direction].countdown = 3;
-            }
-            if (newState[dir as Direction].countdown <= 0 && newState[dir as Direction].signal === 'yellow') {
+            } else if (state.signal === 'yellow' && state.countdown > 0) {
+              newState[dir as Direction].countdown -= 1;
+            } else if (state.signal === 'yellow' && state.countdown <= 0) {
+              // Switch to red and prepare for next direction
               newState[dir as Direction].signal = 'red';
+              newState[dir as Direction].countdown = 0;
             }
-          });
+          }
         }
 
         return newState;
@@ -161,18 +178,30 @@ export const TrafficIntersection = () => {
     const interval = setInterval(() => {
       setVehicles(prev => {
         const updated = prev
-          .map(vehicle => ({
-            ...vehicle,
-            position: vehicle.position + vehicle.speed
-          }))
+          .map(vehicle => {
+            // Check if vehicle should stop at intersection
+            const canMove = directions[vehicle.direction].signal === 'green';
+            const atIntersection = vehicle.position >= 40 && vehicle.position <= 50;
+            
+            // Stop if signal is red/yellow and approaching intersection
+            if (!canMove && vehicle.position < 45) {
+              return { ...vehicle, position: Math.min(vehicle.position, 42) }; // Stop before intersection
+            }
+            
+            // Move normally if signal is green or already past intersection
+            return {
+              ...vehicle,
+              position: vehicle.position + vehicle.speed
+            };
+          })
           .filter(vehicle => vehicle.position < 100); // Remove vehicles that passed
 
-        // Count vehicles near intersection (waiting)
+        // Count vehicles waiting at intersection (stopped vehicles)
         const counts = {
-          north: updated.filter(v => v.direction === 'north' && v.position < 50).length,
-          south: updated.filter(v => v.direction === 'south' && v.position < 50).length,
-          east: updated.filter(v => v.direction === 'east' && v.position < 50).length,
-          west: updated.filter(v => v.direction === 'west' && v.position < 50).length
+          north: updated.filter(v => v.direction === 'north' && v.position < 45).length,
+          south: updated.filter(v => v.direction === 'south' && v.position < 45).length,
+          east: updated.filter(v => v.direction === 'east' && v.position < 45).length,
+          west: updated.filter(v => v.direction === 'west' && v.position < 45).length
         };
 
         setDirections(prev => {
@@ -185,10 +214,10 @@ export const TrafficIntersection = () => {
 
         return updated;
       });
-    }, 100);
+    }, 150); // Slightly slower for better control
 
     return () => clearInterval(interval);
-  }, []);
+  }, [directions]);
 
   return (
     <div className="min-h-screen bg-background p-4">

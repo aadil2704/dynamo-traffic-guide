@@ -65,12 +65,13 @@ export const Vehicle = ({ vehicle, canMove }: VehicleProps) => {
 
   const position = getVehiclePosition();
   
-  // Don't move if signal is red and vehicle hasn't entered intersection
-  const shouldStop = !canMove && vehicle.position < 45;
+  // Check if vehicle is stopped at intersection
+  const isWaitingAtIntersection = !canMove && vehicle.position <= 42 && vehicle.position >= 35;
+  const isPastIntersection = vehicle.position > 50;
   
   return (
     <div
-      className={`absolute transition-all duration-150 ${getVehicleRotation()}`}
+      className={`absolute transition-all duration-200 ${getVehicleRotation()}`}
       style={{
         left: `${position.x}%`,
         top: `${position.y}%`,
@@ -80,7 +81,9 @@ export const Vehicle = ({ vehicle, canMove }: VehicleProps) => {
     >
       <div className="relative">
         {/* Vehicle emoji */}
-        <div className={`text-2xl ${shouldStop ? 'opacity-75' : ''}`}>
+        <div className={`text-2xl transition-opacity duration-300 ${
+          isWaitingAtIntersection ? 'opacity-60' : 'opacity-100'
+        }`}>
           {vehicle.type}
         </div>
         
@@ -91,11 +94,19 @@ export const Vehicle = ({ vehicle, canMove }: VehicleProps) => {
           </div>
         )}
         
-        {/* Speed indicator */}
-        {canMove && (
-          <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2">
-            <div className="w-1 h-1 bg-traffic-green rounded-full animate-ping"></div>
-          </div>
+        {/* Status indicators */}
+        <div className="absolute -bottom-3 left-1/2 transform -translate-x-1/2 flex items-center justify-center">
+          {isWaitingAtIntersection && (
+            <div className="w-2 h-2 bg-traffic-red rounded-full"></div>
+          )}
+          {canMove && !isWaitingAtIntersection && (
+            <div className="w-1 h-1 bg-traffic-green rounded-full animate-pulse"></div>
+          )}
+        </div>
+        
+        {/* Brake lights for stopped vehicles */}
+        {isWaitingAtIntersection && (
+          <div className="absolute inset-0 bg-traffic-red rounded-full opacity-20 animate-pulse"></div>
         )}
       </div>
     </div>
