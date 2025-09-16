@@ -26,10 +26,10 @@ interface DirectionState {
 
 const VEHICLE_EMOJIS = ['🚗', '🚙', '🚐', '🚛', '🚌', '🏎️'];
 const SPAWN_RATES = {
-  north: 0.8, // High traffic
-  south: 0.8, // High traffic  
-  east: 0.3,  // Low traffic
-  west: 0.3   // Low traffic
+  north: 0.7, // High traffic
+  south: 0.7, // High traffic  
+  east: 0.5,  // Moderate traffic
+  west: 0.5   // Moderate traffic
 };
 
 export const TrafficIntersection = () => {
@@ -37,7 +37,7 @@ export const TrafficIntersection = () => {
   const [directions, setDirections] = useState<Record<Direction, DirectionState>>({
     north: { signal: 'red', countdown: 0, vehicleCount: 0, allowLeft: true, allowRight: true },
     south: { signal: 'red', countdown: 0, vehicleCount: 0, allowLeft: true, allowRight: true },
-    east: { signal: 'green', countdown: 25, vehicleCount: 0, allowLeft: true, allowRight: true },
+    east: { signal: 'green', countdown: 20, vehicleCount: 0, allowLeft: true, allowRight: true },
     west: { signal: 'red', countdown: 0, vehicleCount: 0, allowLeft: true, allowRight: true }
   });
   const [currentDirection, setCurrentDirection] = useState<Direction>('east');
@@ -54,39 +54,65 @@ export const TrafficIntersection = () => {
       count: state.vehicleCount
     }));
 
-    // AI Logic: Calculate optimal green time based on vehicle count
     const currentCount = directions[currentDirection].vehicleCount;
-    
-    // Base time of 10 seconds, plus 1.5 seconds per vehicle, max 45 seconds
-    const optimalTime = Math.min(Math.max(10, currentCount * 1.5), 45);
-    
-    // Check if we should switch to next direction
-    const nextDirection = directionOrder[(currentIndex + 1) % 4];
-    const nextCount = directions[nextDirection].vehicleCount;
-    
-    // Switch conditions:
-    // 1. Current countdown is 0 (natural end)
-    // 2. Current direction has no vehicles and countdown < 5
-    // 3. Next direction has significantly more vehicles and current countdown < 10
     const currentSignal = directions[currentDirection].signal;
     const currentCountdown = directions[currentDirection].countdown;
     
-    const shouldSwitch = (
-      (currentCountdown <= 0 && currentSignal === 'red') || // Natural cycle end
-      (currentCount === 0 && currentCountdown <= 5) || // No vehicles waiting
-      (nextCount >= currentCount + 3 && currentCountdown <= 10) // High demand next
+    // Find direction with highest vehicle count
+    const maxVehicleDirection = counts.reduce((max, curr) => 
+      curr.count > max.count ? curr : max
     );
     
-    if (shouldSwitch) {
-      const decision = `AI: Switching ${currentDirection}→${nextDirection} | Current: ${currentCount}v, Next: ${nextCount}v`;
-      setAiDecisions(prev => [...prev.slice(-4), decision]);
-      return { switchTo: nextDirection, greenTime: Math.min(Math.max(15, nextCount * 2), 50) };
+    // Check if we should switch based on vehicle count priority
+    const nextDirection = directionOrder[(currentIndex + 1) % 4];
+    const nextCount = directions[nextDirection].vehicleCount;
+    
+    // Switch conditions (more aggressive):
+    // 1. Current direction has no vehicles and countdown < 8
+    // 2. Another direction has 3+ more vehicles than current
+    // 3. Natural countdown reaches 0
+    // 4. Emergency switch if any direction has 10+ vehicles
+    
+    const emergencyDirection = counts.find(c => c.count >= 10);
+    const highDemandDirection = counts.find(c => c.count >= currentCount + 3 && c.direction !== currentDirection);
+    
+    let shouldSwitch = false;
+    let targetDirection = nextDirection;
+    let reason = "";
+    
+    if (emergencyDirection && emergencyDirection.direction !== currentDirection) {
+      shouldSwitch = true;
+      targetDirection = emergencyDirection.direction;
+      reason = `Emergency switch - ${emergencyDirection.count} vehicles waiting`;
+    } else if (currentCount === 0 && currentCountdown <= 8) {
+      shouldSwitch = true;
+      reason = `No vehicles in current direction`;
+    } else if (highDemandDirection && currentCountdown <= 10) {
+      shouldSwitch = true;
+      targetDirection = highDemandDirection.direction;
+      reason = `High demand - ${highDemandDirection.count} vs ${currentCount} vehicles`;
+    } else if (currentCountdown <= 0 && currentSignal === 'red') {
+      shouldSwitch = true;
+      reason = `Natural cycle completion`;
+    } else if (currentCountdown <= 0 && currentSignal === 'yellow') {
+      shouldSwitch = true;
+      reason = `Yellow phase complete`;
     }
     
-    return { switchTo: null, greenTime: optimalTime };
+    if (shouldSwitch) {
+      const targetCount = directions[targetDirection].vehicleCount;
+      const decision = `AI: ${reason} | ${currentDirection}→${targetDirection} (${currentCount}→${targetCount} vehicles)`;
+      setAiDecisions(prev => [...prev.slice(-4), decision]);
+      
+      // Calculate green time: minimum 12s, 2s per vehicle, max 50s
+      const greenTime = Math.min(Math.max(12, targetCount * 2), 50);
+      return { switchTo: targetDirection, greenTime };
+    }
+    
+    return { switchTo: null, greenTime: 0 };
   }, [currentDirection, directions]);
 
-  // Update signal states - Ensure only one direction has green at a time
+  // Update signal states - More responsive switching
   useEffect(() => {
     const interval = setInterval(() => {
       setDirections(prev => {
@@ -113,41 +139,46 @@ export const TrafficIntersection = () => {
           
           setCurrentDirection(decision.switchTo);
         } else {
-          // Countdown existing green light
-          const greenDirection = Object.entries(newState).find(([_, state]) => state.signal === 'green');
-          
-          if (greenDirection) {
-            const [dir, state] = greenDirection;
-            if (state.countdown > 0) {
-              newState[dir as Direction].countdown -= 1;
-            } else if (state.signal === 'green') {
-              // Switch to yellow for 3 seconds
-              newState[dir as Direction].signal = 'yellow';
-              newState[dir as Direction].countdown = 3;
+          // Handle countdown for current active signal
+          Object.keys(newState).forEach(dir => {
+            const direction = dir as Direction;
+            const state = newState[direction];
+            
+            if (state.signal === 'green' && state.countdown > 0) {
+              newState[direction].countdown -= 1;
+            } else if (state.signal === 'green' && state.countdown <= 0) {
+              // Switch to yellow for 2 seconds
+              newState[direction].signal = 'yellow';
+              newState[direction].countdown = 2;
             } else if (state.signal === 'yellow' && state.countdown > 0) {
-              newState[dir as Direction].countdown -= 1;
+              newState[direction].countdown -= 1;
             } else if (state.signal === 'yellow' && state.countdown <= 0) {
-              // Switch to red and prepare for next direction
-              newState[dir as Direction].signal = 'red';
-              newState[dir as Direction].countdown = 0;
+              // Switch to red
+              newState[direction].signal = 'red';
+              newState[direction].countdown = 0;
             }
-          }
+          });
         }
 
         return newState;
       });
-    }, 1000);
+    }, 800); // Faster updates - every 0.8 seconds
 
     return () => clearInterval(interval);
   }, [makeAIDecision]);
 
-  // Spawn vehicles
+  // Spawn vehicles - More frequent spawning for better demonstration
   useEffect(() => {
     const interval = setInterval(() => {
       const newVehicles: VehicleData[] = [];
       
-      Object.entries(SPAWN_RATES).forEach(([direction, rate]) => {
-        if (Math.random() < rate) {
+      // Ensure all directions get vehicles
+      Object.entries(SPAWN_RATES).forEach(([direction, baseRate]) => {
+        // Increase spawn rate if direction has been waiting
+        const waitingTime = directions[direction as Direction].signal === 'red' ? 1.5 : 1;
+        const adjustedRate = baseRate * waitingTime;
+        
+        if (Math.random() < adjustedRate) {
           const turnChoice = Math.random();
           let turn: TurnDirection = 'straight';
           if (turnChoice < 0.2) turn = 'left';
@@ -168,10 +199,10 @@ export const TrafficIntersection = () => {
       if (newVehicles.length > 0) {
         setVehicles(prev => [...prev, ...newVehicles]);
       }
-    }, 1500); // Spawn every 1.5 seconds
+    }, 1200); // Faster spawning - every 1.2 seconds
 
     return () => clearInterval(interval);
-  }, []);
+  }, [directions]);
 
   // Update vehicle positions and count vehicles
   useEffect(() => {
